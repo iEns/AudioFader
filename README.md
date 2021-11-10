@@ -24,19 +24,19 @@ I have not tested on other architectures (Could potentially have problems with e
 	Options:
 			--trimstart n   Trim start
 			--trimend n     Trim end
-							Argument for any trim option is a percentage threshold
-							n=0 means no trimming
-							n=0.0001 to 0.01 are commonly used values
+					Argument for any trim option is a percentage threshold
+					n=0 means no trimming
+					n=0.0001 to 0.01 are commonly used values
 			--fadein n      Fade-in duration in milliseconds
 			--fadeout n     Fade-out duration in milliseconds
 			--fadecurve n   Choose the applied curve to the fade
-							0 = Linear (default)
-							1 = Bezier
-							2 = Logarithmic
+					0 = Linear (default)
+					1 = Bezier
+					2 = Logarithmic
 			--padstart n    Pad the start with silence, in milliseconds
-							Padding is done after trimming and fading
+					Padding is done after trimming and fading
 			--padend n      Pad the end with silence, in milliseconds
-							Padding is done after trimming and fading
+					Padding is done after trimming and fading
 
 	Operations are always done in this order: Trim->Fade->Pad
 	WAV-files must be uncompressed 8, 16 , 24 or 32 bit, stereo or mono
