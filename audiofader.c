@@ -35,6 +35,10 @@
 #include<string.h>
 #include<time.h>
 #include<math.h>
+#include<windows.h>
+
+
+
 
 
 // define wav file header
@@ -313,6 +317,17 @@ int main(int argc, char *argv[]) {
 	int OptPadEnd = 0;
 	char *inputFileName = argv[1];
 	char *outputFileName = argv[2];
+
+	//expand input file name to full path
+	char *inputFileNameFullPath = (char *)malloc(MAX_PATH);
+	GetFullPathName(inputFileName, MAX_PATH, inputFileNameFullPath, NULL);
+	inputFileName = inputFileNameFullPath;
+
+	//expand output file name to full path
+	char *outputFileNameFullPath = (char *)malloc(MAX_PATH);
+	GetFullPathName(outputFileName, MAX_PATH, outputFileNameFullPath, NULL);
+	outputFileName = outputFileNameFullPath;
+
 	for (int i = 3; i < argc; i++) {
 		if (strcmp(argv[i], "--fadein") == 0) {
 			// check that an argument is supplied and is not the next option
@@ -425,9 +440,9 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	// check that input file and output file are not the same
-	if (strcmp(inputFileName, outputFileName) == 0) {
-		printf("Input and output file are the same.\n\n");
+	// check that input file and output file are not the same (case insensitive)
+	if (strcasecmp(inputFileName, outputFileName) == 0) {
+		printf("Input and output file names cannot be the same\n\n");
 		return 1;
 	}
 
