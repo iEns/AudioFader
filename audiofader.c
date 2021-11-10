@@ -28,7 +28,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Version history:
 0.91beta	2020-11-08	Initial version
-0.92beta	2020-11-10	Code Cleanup, better error checking
+0.92beta	2020-11-10	Code Cleanup, better error checking, support for 8 and 32 bit files.
 */
 
 #include <math.h>
@@ -125,9 +125,9 @@ int fadeBuffer(WAV_HEADER header, unsigned char *buffer, int bufferSize, int fad
 
         switch (bytesPerSample) {
             case 1:
-                inputSample = buffer[i * bytesPerSample];
-                fadeInSample = (int)(inputSample * fadeFactor);
-                buffer[i * bytesPerSample] = (signed char)fadeInSample;
+                inputSample = (buffer[i * bytesPerSample])-127;
+                fadeInSample = (inputSample * fadeFactor);
+                buffer[i * bytesPerSample] = (unsigned char)(fadeInSample+127);
                 break;
             case 2:
                 inputSample = (signed short int)(buffer[i * bytesPerSample + 1] << 8 | buffer[i * bytesPerSample]);
@@ -144,6 +144,11 @@ int fadeBuffer(WAV_HEADER header, unsigned char *buffer, int bufferSize, int fad
                 buffer[i * bytesPerSample + 2] = (unsigned char)(inputSample24.int24 >> 16);
                 buffer[i * bytesPerSample + 1] = (unsigned char)(inputSample24.int24 >> 8);
                 buffer[i * bytesPerSample] = (unsigned char)(inputSample24.int24 & 0xff);
+                break;
+            case 4:
+				memcpy(&inputSample, &buffer[i * bytesPerSample], 4);
+                inputSample = (inputSample * fadeFactor);
+				memcpy(&buffer[i * bytesPerSample], &inputSample, 4);
                 break;
         }
     }
@@ -277,7 +282,7 @@ int main(int argc, char *argv[]) {
         printf("\t\t\tPadding is done after trimming and fading\n");
         printf("\n");
         printf("Operations are always done in this order: Trim->Fade->Pad\n");
-        printf("WAV-files must be uncompressed 16 bit, 24 bit, stereo or mono\n\n");
+        printf("WAV-files must be uncompressed 8, 16 , 24 or 32 bit, stereo or mono\n\n");
         printf(
             "Example: %s input.wav output.wav --trim 0.01 --fadein 1000 "
             "--fadeout "
@@ -507,8 +512,8 @@ int main(int argc, char *argv[]) {
     }
 
     // check that the file is 16 or 24 bits
-    if (inputHeader.bitsPerSample != 16 && inputHeader.bitsPerSample != 24) {
-        printf("Error: input file is not 16 or 24 bits\n");
+    if (inputHeader.bitsPerSample != 8 && inputHeader.bitsPerSample != 16 && inputHeader.bitsPerSample != 24 && inputHeader.bitsPerSample != 32 ) {
+        printf("Error: input file is not 8, 16, 24 or 32 bits\n");
         return 1;
     }
 
