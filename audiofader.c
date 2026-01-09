@@ -83,7 +83,11 @@ int main(int argc, char *argv[]) {
     print_title();
 
     /* Phase 1: Parse and validate options */
-    if (parse_options(argc, argv, &ctx) != 0) {
+    int parse_result = parse_options(argc, argv, &ctx);
+    if (parse_result == 2) {
+        return 0;  /* --help was shown, exit successfully */
+    }
+    if (parse_result != 0) {
         return 1;
     }
 

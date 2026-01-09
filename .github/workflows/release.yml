@@ -13,6 +13,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -20,7 +21,7 @@ jobs:
             compiler: gcc
             ext: ''
             static: '-static'
-          - os: macos-13
+          - os: macos-15
             target: macos-x64
             compiler: clang
             ext: ''

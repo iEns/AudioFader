@@ -44,7 +44,7 @@ int validate_double_arg(const char *arg, double *out_value, double min,
  * @param argc Argument count
  * @param argv Argument vector
  * @param ctx Pointer to application context
- * @return 0 on success, 1 on error
+ * @return 0 on success, 1 on error, 2 if help shown (not an error)
  */
 int parse_options(int argc, char *argv[], audio_fader_context_t *ctx);
 

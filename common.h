@@ -33,7 +33,7 @@
  * Version Information
  * ============================================================================ */
 
-#define AUDIOFADER_VERSION "1.0.0"
+#define AUDIOFADER_VERSION "1.0.1"
 #define AUDIOFADER_COPYRIGHT "Copyright 2021-2026 iEns Labs"
 
 /* ============================================================================

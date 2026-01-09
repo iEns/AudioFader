@@ -165,6 +165,15 @@ void print_header_stats(const wav_header_t *header) {
  * ============================================================================ */
 
 int parse_options(int argc, char *argv[], audio_fader_context_t *ctx) {
+    /* Check for --help first (before minimum arg check) */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0) {
+            const char *program_name = get_program_name(argv[0]);
+            print_help(program_name);
+            return 2;  /* Help shown - not an error */
+        }
+    }
+
     /* Check minimum argument count */
     if (argc < MIN_ARGC) {
         const char *program_name = get_program_name(argv[0]);
@@ -286,11 +295,8 @@ int parse_options(int argc, char *argv[], audio_fader_context_t *ctx) {
             ctx->options.verbosity = VERBOSITY_QUIET;
         } else if (strcmp(argv[i], "--verbose") == 0) {
             ctx->options.verbosity = VERBOSITY_VERBOSE;
-        } else if (strcmp(argv[i], "--help") == 0) {
-            const char *program_name = get_program_name(argv[0]);
-            print_help(program_name);
-            goto error_cleanup;
         } else {
+            /* --help is handled at start of parse_options */
             LOG_ERROR("Error: Unknown option: %s\n", argv[i]);
             LOG_ERROR("       Use --help to see available options\n");
             goto error_cleanup;
