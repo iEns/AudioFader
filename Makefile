@@ -5,7 +5,7 @@
 
 # Project information
 PROJECT = audiofader
-VERSION = 0.96beta
+VERSION = 1.0.0
 
 # Source files (multi-file structure)
 SRCS = audiofader.c wav_io.c audio_processing.c options.c ui.c

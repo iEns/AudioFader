@@ -5,6 +5,22 @@ All notable changes to AudioFader will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-01-09
+
+### First Stable Release
+
+AudioFader reaches version 1.0.0 with a stable, production-ready codebase.
+
+#### Added
+- **GitHub Actions release workflow**: Automated builds for Linux x64, macOS x64, macOS ARM64, and Windows x64
+- **SHA256 checksums**: SHA256SUMS.txt included with releases for verification
+- **Static Linux builds**: Linux binaries are statically linked for maximum portability
+
+#### Changed
+- **Version bump**: From 0.96beta to 1.0.0 (stable)
+
+---
+
 ## [0.96beta] - 2026-01-08
 
 ### Multi-File Refactoring & Additional Safety Fixes
@@ -267,8 +283,8 @@ Verified with multiple test scenarios:
 
 ### Known Limitations
 
-- Maximum audio data size: 1GB (safety limit)
-- Maximum duration: 1,000,000 milliseconds (~16.7 minutes)
+- Maximum audio data size: 2GB (safety limit)
+- Maximum duration of operations: 10,000,000 milliseconds (~33 minutes)
 - Windows still uses seek/ftell for file size (no fstat available)
 
 ## [0.94beta] - 2026-01-06

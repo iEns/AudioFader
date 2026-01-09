@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            compiler: gcc
+            ext: ''
+            static: '-static'
+          - os: macos-13
+            target: macos-x64
+            compiler: clang
+            ext: ''
+            static: ''
+          - os: macos-latest
+            target: macos-arm64
+            compiler: clang
+            ext: ''
+            static: ''
+          - os: windows-latest
+            target: windows-x64
+            compiler: gcc
+            ext: '.exe'
+            static: ''
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ${{ matrix.compiler }} -O2 -Wall ${{ matrix.static }} -o audiofader \
+            audiofader.c wav_io.c audio_processing.c options.c ui.c -lm
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          gcc -O2 -Wall -o audiofader.exe \
+            audiofader.c wav_io.c audio_processing.c options.c ui.c
+
+      - name: Test binary
+        shell: bash
+        run: |
+          ./audiofader${{ matrix.ext }} --help
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          mv audiofader${{ matrix.ext }} \
+             audiofader-${{ steps.version.outputs.VERSION }}-${{ matrix.target }}${{ matrix.ext }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audiofader-${{ matrix.target }}
+          path: audiofader-*-${{ matrix.target }}*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          sha256sum audiofader-* > SHA256SUMS.txt
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          files: |
+            audiofader-*
+            SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}

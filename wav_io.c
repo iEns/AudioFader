@@ -205,9 +205,9 @@ int load_wav_file(audio_fader_context_t *ctx, wav_header_t *header,
                   data_chunk_size, ctx->options.input_filename);
         goto cleanup;
     }
-    if (data_chunk_size > MAX_AUDIO_SIZE) {
-        LOG_ERROR("Error: Audio data size (%d bytes) exceeds maximum allowed (%d bytes)\n",
-                  data_chunk_size, MAX_AUDIO_SIZE);
+    if ((long long)data_chunk_size > MAX_AUDIO_SIZE) {
+        LOG_ERROR("Error: Audio data size (%d bytes) exceeds maximum allowed (%lld bytes)\n",
+                  data_chunk_size, (long long)MAX_AUDIO_SIZE);
         LOG_ERROR("       File: %s\n", ctx->options.input_filename);
         goto cleanup;
     }

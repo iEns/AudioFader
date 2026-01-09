@@ -33,17 +33,17 @@
  * Version Information
  * ============================================================================ */
 
-#define AUDIOFADER_VERSION "0.96beta"
+#define AUDIOFADER_VERSION "1.0.0"
 #define AUDIOFADER_COPYRIGHT "Copyright 2021-2026 iEns Labs"
 
 /* ============================================================================
  * Constants
  * ============================================================================ */
 
-#define MAX_DURATION_MS 1000000
+#define MAX_DURATION_MS 10000000
 #define MAX_TRIM_PERCENT 100.0
 #define MIN_ARGC 3
-#define MAX_AUDIO_SIZE (1024 * 1024 * 1024)  /* 1GB limit for safety */
+#define MAX_AUDIO_SIZE (2LL * 1024 * 1024 * 1024)  /* 2GB limit for safety */
 
 /* Sample max values for each bit depth */
 #define INT8_MAX_SAMPLE 0x7F

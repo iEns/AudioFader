@@ -64,7 +64,7 @@ gcc -std=c99 -Wall -O2 -o audiofader.exe audiofader.c wav_io.c audio_processing.
 ### Usage
 
 ```
-AudioFader v0.96beta Copyright 2021-2026 iEns Labs
+AudioFader v1.0.0 Copyright 2021-2026 iEns Labs
 
 Trim, fade and pad WAV audio files.
 
