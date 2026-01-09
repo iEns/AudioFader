@@ -166,27 +166,19 @@ int load_wav_file(audio_fader_context_t *ctx, wav_header_t *header,
         goto cleanup;
     }
 
-    /* Get file size */
-    long file_size;
-#ifdef _WIN32
-    /* Windows: use _fstat64 for large file support */
-    struct _stat64 st;
-    if (_fstat64(_fileno(input_file), &st) != 0) {
+    /* Get file size using fseek/ftell (portable) */
+    if (fseek(input_file, 0, SEEK_END) != 0) {
+        LOG_ERROR("Error: Failed to seek in '%s': %s\n",
+                  ctx->options.input_filename, strerror(errno));
+        goto cleanup;
+    }
+    long file_size = ftell(input_file);
+    if (file_size < 0) {
         LOG_ERROR("Error: Failed to get file size for '%s': %s\n",
                   ctx->options.input_filename, strerror(errno));
         goto cleanup;
     }
-    file_size = (long)st.st_size;
-#else
-    /* Unix/Linux: Use fstat() - one system call instead of three */
-    struct stat st;
-    if (fstat(fileno(input_file), &st) != 0) {
-        LOG_ERROR("Error: Failed to get file size for '%s': %s\n",
-                  ctx->options.input_filename, strerror(errno));
-        goto cleanup;
-    }
-    file_size = st.st_size;
-#endif
+    rewind(input_file);
 
     /* Validate header */
     if (validate_wav_header(header) != 0) {
@@ -287,7 +279,7 @@ int write_output(audio_fader_context_t *ctx, wav_header_t *header,
     /* Update header with new sizes */
     header->subchunk2_size = data_size;
     header->chunk_size = data_size + WAV_HEADER_EXTRA_SIZE;
-    strncpy(header->subchunk2_id, WAV_DATA_ID, 4);
+    memcpy(header->subchunk2_id, WAV_DATA_ID, 4);
 
     /* Write header */
     if (fwrite(header, sizeof(wav_header_t), 1, output_file) != 1) {
