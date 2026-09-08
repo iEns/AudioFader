@@ -60,8 +60,12 @@ int skip_to_data_chunk(FILE *file, const wav_header_t *header,
                        long file_size, int32_t *data_chunk_size) {
     *data_chunk_size = header->subchunk2_size;
 
-    /* If subchunk2 is already data, we're done */
+    /* If subchunk2 is already data, seek to start of audio data */
     if (strncmp(header->subchunk2_id, WAV_DATA_ID, 4) == 0) {
+        if (fseek(file, (long)sizeof(wav_header_t), SEEK_SET) != 0) {
+            LOG_ERROR("Error: Failed to seek to audio data (corrupted file?)\n");
+            return 1;
+        }
         return 0;
     }
 

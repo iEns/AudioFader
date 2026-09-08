@@ -43,7 +43,7 @@ ifeq ($(UNAME_S),Linux)
     # Linux
     PLATFORM = Linux
     TARGET = $(PROJECT)
-    CFLAGS_PLATFORM = -D_POSIX_C_SOURCE=200809L
+    CFLAGS_PLATFORM = -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
     LDFLAGS = -lm
     INSTALL_DIR = /usr/local/bin
     RM = rm -f
@@ -76,7 +76,7 @@ endif
 # Targets
 # =============================================================================
 
-.PHONY: all clean debug release info install uninstall help
+.PHONY: all clean debug release info install uninstall help check test
 
 # Default target
 all: info $(TARGET)
@@ -117,6 +117,7 @@ clean:
 	-$(RM) $(PROJECT) $(PROJECT).exe 2>/dev/null || true
 	-$(RM) *.o *.obj 2>/dev/null || true
 	-$(RM) -r build 2>/dev/null || true
+	-$(RM) tests/test_trim tests/test_trim.exe 2>/dev/null || true
 	@echo "Clean complete."
 
 # Install to system
@@ -152,8 +153,14 @@ format:
 	@echo "Formatting code..."
 	@which clang-format >/dev/null 2>&1 && clang-format -i $(SRCS) $(HDRS) || echo "clang-format not found, skipping..."
 
+# Unit tests (no external dependencies, C99 only)
+check:
+	@echo "Building and running trim unit tests..."
+	$(CC) $(CFLAGS) -o tests/test_trim tests/test_trim.c audio_processing.c wav_io.c ui.c $(LDFLAGS)
+	./tests/test_trim
+
 # Run with example (requires test file)
-test: $(TARGET)
+test: check $(TARGET)
 	@echo "Running basic functionality test..."
 	@if [ -f "test16sine.wav" ]; then \
 		./$(TARGET) test16sine.wav output_test.wav --fadein 500 --fadeout 500 --dry-run; \
@@ -175,7 +182,8 @@ help:
 	@echo "  make info         - Display build configuration"
 	@echo "  make analyze      - Run static analysis (requires cppcheck)"
 	@echo "  make format       - Format source code (requires clang-format)"
-	@echo "  make test         - Run basic functionality test"
+	@echo "  make check        - Build and run unit tests"
+	@echo "  make test         - Run unit tests + basic functionality test"
 	@echo "  make help         - Display this help message"
 	@echo ""
 	@echo "Build options:"

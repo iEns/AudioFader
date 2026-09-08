@@ -16,8 +16,9 @@
 int32_t read_sample(const unsigned char *buffer, int index,
                     int bytes_per_sample, int buffer_size,
                     struct int24 *buf24) {
+    (void)buf24; /* kept for API compatibility; 24-bit is now handled portably */
     /* FIX #5: Add buffer bounds checking */
-    if (buffer == NULL || buf24 == NULL || index < 0) {
+    if (buffer == NULL || index < 0) {
         return 0;
     }
 
@@ -37,10 +38,17 @@ int32_t read_sample(const unsigned char *buffer, int index,
         case 2:
             sample = (int16_t)(ptr[1] << 8 | ptr[0]);
             break;
-        case 3:
-            buf24->int24 = (ptr[2] << 16) | (ptr[1] << 8) | ptr[0];
-            sample = buf24->int24;
+        case 3: {
+            /* Portable 24-bit little-endian sign extension (no GCC bitfield). */
+            int32_t v = (int32_t)((uint32_t)ptr[0] |
+                                  ((uint32_t)ptr[1] << 8) |
+                                  ((uint32_t)ptr[2] << 16));
+            if (v & 0x00800000) {
+                v |= (int32_t)(~0x00FFFFFF);
+            }
+            sample = v;
             break;
+        }
         case 4:
             memcpy(&sample, ptr, 4);
             break;
@@ -53,6 +61,7 @@ int32_t read_sample(const unsigned char *buffer, int index,
 
 int write_sample(unsigned char *buffer, int index, int bytes_per_sample,
                  int buffer_size, int32_t value, struct int24 *buf24) {
+    (void)buf24; /* kept for API compatibility; 24-bit is now handled portably */
     /* FIX #5: Add buffer bounds checking */
     if (buffer == NULL || index < 0) {
         return 0;
@@ -75,10 +84,9 @@ int write_sample(unsigned char *buffer, int index, int bytes_per_sample,
             ptr[1] = (unsigned char)((value >> 8) & 0xFF);
             break;
         case 3:
-            buf24->int24 = value;
-            ptr[0] = (unsigned char)(buf24->int24 & 0xFF);
-            ptr[1] = (unsigned char)((buf24->int24 >> 8) & 0xFF);
-            ptr[2] = (unsigned char)((buf24->int24 >> 16) & 0xFF);
+            ptr[0] = (unsigned char)(value & 0xFF);
+            ptr[1] = (unsigned char)((value >> 8) & 0xFF);
+            ptr[2] = (unsigned char)((value >> 16) & 0xFF);
             break;
         case 4:
             memcpy(ptr, &value, 4);
@@ -120,6 +128,39 @@ int duration_to_samples(int duration_ms, int sample_rate) {
  * Trim Boundary Detection
  * ============================================================================ */
 
+/**
+ * Magnitude of a sample for silence detection.
+ *
+ * Signed formats (16/24/32-bit): absolute value (INT32_MIN-safe).
+ * Unsigned 8-bit PCM: distance from silence center (128).
+ */
+static int32_t sample_magnitude(int32_t sample, int bytes_per_sample) {
+    if (bytes_per_sample == 1) {
+        int32_t centered = sample - 128;
+        return centered < 0 ? -centered : centered;
+    }
+    if (sample == INT32_MIN) {
+        return INT32_MAX;
+    }
+    return sample < 0 ? -sample : sample;
+}
+
+/**
+ * Round a sample index down to its channel-frame start.
+ */
+static int align_frame_start(int index, int num_channels) {
+    return index - (index % num_channels);
+}
+
+/**
+ * Round a sample index up to the exclusive end of its channel frame.
+ * Result is clamped to total_samples by the caller.
+ */
+static int align_frame_end_exclusive(int index, int num_channels, int total_samples) {
+    int end = align_frame_start(index, num_channels) + num_channels;
+    return end > total_samples ? total_samples : end;
+}
+
 int find_first_above_threshold(const unsigned char *buffer, int buffer_size,
                                int total_samples, int bytes_per_sample,
                                int32_t threshold, int sample_rate,
@@ -130,9 +171,9 @@ int find_first_above_threshold(const unsigned char *buffer, int buffer_size,
         /* Linear search */
         for (int i = 0; i < total_samples; i++) {
             int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-            if (sample > threshold) {
+            if (sample_magnitude(sample, bytes_per_sample) > threshold) {
                 /* Align to channel boundary */
-                return i - (i % num_channels);
+                return align_frame_start(i, num_channels);
             }
         }
         return 0;
@@ -145,7 +186,7 @@ int find_first_above_threshold(const unsigned char *buffer, int buffer_size,
 
     for (int i = 0; i < total_samples; i += sample_stride) {
         int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-        if (sample > threshold) {
+        if (sample_magnitude(sample, bytes_per_sample) > threshold) {
             approx_start = i;
             break;
         }
@@ -158,9 +199,9 @@ int find_first_above_threshold(const unsigned char *buffer, int buffer_size,
 
     for (int i = search_start; i < search_end; i++) {
         int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-        if (sample > threshold) {
+        if (sample_magnitude(sample, bytes_per_sample) > threshold) {
             /* Align to channel boundary */
-            return i - (i % num_channels);
+            return align_frame_start(i, num_channels);
         }
     }
 
@@ -177,9 +218,9 @@ int find_last_above_threshold(const unsigned char *buffer, int buffer_size,
         /* Linear search from end */
         for (int i = total_samples - 1; i >= 0; i--) {
             int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-            if (sample > threshold) {
-                /* Align to channel boundary */
-                return i - (i % num_channels);
+            if (sample_magnitude(sample, bytes_per_sample) > threshold) {
+                /* Exclusive end of the frame containing the last loud sample */
+                return align_frame_end_exclusive(i, num_channels, total_samples);
             }
         }
         return total_samples;
@@ -191,7 +232,7 @@ int find_last_above_threshold(const unsigned char *buffer, int buffer_size,
 
     for (int i = total_samples - 1; i >= 0; i -= sample_stride) {
         int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-        if (sample > threshold) {
+        if (sample_magnitude(sample, bytes_per_sample) > threshold) {
             approx_end = i;
             break;
         }
@@ -204,9 +245,9 @@ int find_last_above_threshold(const unsigned char *buffer, int buffer_size,
 
     for (int i = search_end - 1; i >= search_start; i--) {
         int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-        if (sample > threshold) {
-            /* Align to channel boundary */
-            return i - (i % num_channels);
+        if (sample_magnitude(sample, bytes_per_sample) > threshold) {
+            /* Exclusive end of the frame containing the last loud sample */
+            return align_frame_end_exclusive(i, num_channels, total_samples);
         }
     }
 
@@ -345,11 +386,11 @@ void apply_fade(const wav_header_t *header, unsigned char *buffer,
         /* Read, apply fade, and write back */
         int32_t original_sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
 
-        /* Handle 8-bit unsigned offset */
+        /* Handle 8-bit unsigned offset (silence = 128) */
         if (bytes_per_sample == 1) {
-            original_sample -= 127;
+            original_sample -= 128;
             int32_t faded_sample = (int32_t)(original_sample * fade_factor);
-            write_sample(buffer, i, bytes_per_sample, buffer_size, faded_sample + 127, buf24);
+            write_sample(buffer, i, bytes_per_sample, buffer_size, faded_sample + 128, buf24);
         } else {
             int32_t faded_sample = (int32_t)(original_sample * fade_factor);
             write_sample(buffer, i, bytes_per_sample, buffer_size, faded_sample, buf24);
