@@ -16,7 +16,8 @@
 int32_t read_sample(const unsigned char *buffer, int index,
                     int bytes_per_sample, int buffer_size,
                     struct int24 *buf24) {
-    (void)buf24; /* kept for API compatibility; 24-bit is now handled portably */
+    /* buf24 is reserved for API compatibility (must accept NULL). */
+    (void)buf24;
     /* FIX #5: Add buffer bounds checking */
     if (buffer == NULL || index < 0) {
         return 0;
@@ -35,9 +36,13 @@ int32_t read_sample(const unsigned char *buffer, int index,
         case 1:
             sample = *ptr;
             break;
-        case 2:
-            sample = (int16_t)(ptr[1] << 8 | ptr[0]);
+        case 2: {
+            /* Explicit unsigned composition: avoids implementation-defined
+             * out-of-range cast on platforms with 16-bit int. */
+            uint32_t u = (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8);
+            sample = (u >= 0x8000u) ? (int32_t)(u - 0x10000u) : (int32_t)u;
             break;
+        }
         case 3: {
             /* Portable 24-bit little-endian sign extension (no GCC bitfield). */
             int32_t v = (int32_t)((uint32_t)ptr[0] |
@@ -49,9 +54,15 @@ int32_t read_sample(const unsigned char *buffer, int index,
             sample = v;
             break;
         }
-        case 4:
-            memcpy(&sample, ptr, 4);
+        case 4: {
+            /* Explicit little-endian decode: host-endian independent. */
+            uint32_t u = (uint32_t)ptr[0] |
+                         ((uint32_t)ptr[1] << 8) |
+                         ((uint32_t)ptr[2] << 16) |
+                         ((uint32_t)ptr[3] << 24);
+            sample = (int32_t)u;
             break;
+        }
         default:
             return 0;
     }
@@ -61,7 +72,8 @@ int32_t read_sample(const unsigned char *buffer, int index,
 
 int write_sample(unsigned char *buffer, int index, int bytes_per_sample,
                  int buffer_size, int32_t value, struct int24 *buf24) {
-    (void)buf24; /* kept for API compatibility; 24-bit is now handled portably */
+    /* buf24 is reserved for API compatibility (must accept NULL). */
+    (void)buf24;
     /* FIX #5: Add buffer bounds checking */
     if (buffer == NULL || index < 0) {
         return 0;
@@ -88,9 +100,15 @@ int write_sample(unsigned char *buffer, int index, int bytes_per_sample,
             ptr[1] = (unsigned char)((value >> 8) & 0xFF);
             ptr[2] = (unsigned char)((value >> 16) & 0xFF);
             break;
-        case 4:
-            memcpy(ptr, &value, 4);
+        case 4: {
+            /* Explicit little-endian encode: host-endian independent. */
+            uint32_t u = (uint32_t)value;
+            ptr[0] = (unsigned char)(u & 0xFFu);
+            ptr[1] = (unsigned char)((u >> 8) & 0xFFu);
+            ptr[2] = (unsigned char)((u >> 16) & 0xFFu);
+            ptr[3] = (unsigned char)((u >> 24) & 0xFFu);
             break;
+        }
         default:
             return 0;
     }
@@ -102,7 +120,9 @@ int32_t calculate_threshold(int bytes_per_sample, double threshold_percent) {
     int32_t max_value = 0;
 
     switch (bytes_per_sample) {
-        case 1: max_value = INT8_MAX_SAMPLE; break;
+        /* 8-bit PCM is unsigned around silence 128: magnitude range is
+         * 0..128 (sample 0 -> |-128|), not 0..127. */
+        case 1: max_value = 128; break;
         case 2: max_value = INT16_MAX_SAMPLE; break;
         case 3: max_value = INT24_MAX_SAMPLE; break;
         case 4: max_value = INT32_MAX_SAMPLE; break;
@@ -165,46 +185,20 @@ int find_first_above_threshold(const unsigned char *buffer, int buffer_size,
                                int total_samples, int bytes_per_sample,
                                int32_t threshold, int sample_rate,
                                int num_channels, struct int24 *buf24) {
-    /* For files < 10 seconds, linear search is fast enough */
-    int samples_in_threshold = sample_rate * TRIM_OPTIMIZATION_THRESHOLD_SECONDS * num_channels;
-    if (total_samples < samples_in_threshold) {
-        /* Linear search */
-        for (int i = 0; i < total_samples; i++) {
-            int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-            if (sample_magnitude(sample, bytes_per_sample) > threshold) {
-                /* Align to channel boundary */
-                return align_frame_start(i, num_channels);
-            }
-        }
+    /* Exactness over speed (per review decision): always a linear scan so
+     * single-sample peaks are never missed. A 2 GiB 8-bit file is ~2B
+     * iterations worst-case — acceptable for a CLI batch tool. */
+    (void)sample_rate;
+    if (buffer == NULL || total_samples <= 0 || num_channels <= 0) {
         return 0;
     }
-
-    /* For longer files, use sampling strategy (optimization for large files) */
-    /* Check every Nth sample (TRIM_SAMPLING_DIVISOR samples per second) */
-    int sample_stride = sample_rate * num_channels / TRIM_SAMPLING_DIVISOR;
-    int approx_start = 0;
-
-    for (int i = 0; i < total_samples; i += sample_stride) {
-        int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-        if (sample_magnitude(sample, bytes_per_sample) > threshold) {
-            approx_start = i;
-            break;
-        }
-    }
-
-    /* Narrow search: check samples in window [approx_start - stride, approx_start + stride] */
-    int search_start = (approx_start > sample_stride) ? (approx_start - sample_stride) : 0;
-    int search_end = (approx_start + sample_stride < total_samples) ?
-                     (approx_start + sample_stride) : total_samples;
-
-    for (int i = search_start; i < search_end; i++) {
+    for (int i = 0; i < total_samples; i++) {
         int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
         if (sample_magnitude(sample, bytes_per_sample) > threshold) {
             /* Align to channel boundary */
             return align_frame_start(i, num_channels);
         }
     }
-
     return 0;
 }
 
@@ -212,45 +206,18 @@ int find_last_above_threshold(const unsigned char *buffer, int buffer_size,
                               int total_samples, int bytes_per_sample,
                               int32_t threshold, int sample_rate,
                               int num_channels, struct int24 *buf24) {
-    /* For files < 10 seconds, linear search is fast enough */
-    int samples_in_threshold = sample_rate * TRIM_OPTIMIZATION_THRESHOLD_SECONDS * num_channels;
-    if (total_samples < samples_in_threshold) {
-        /* Linear search from end */
-        for (int i = total_samples - 1; i >= 0; i--) {
-            int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-            if (sample_magnitude(sample, bytes_per_sample) > threshold) {
-                /* Exclusive end of the frame containing the last loud sample */
-                return align_frame_end_exclusive(i, num_channels, total_samples);
-            }
-        }
+    /* Exact linear scan from the end (see find_first_above_threshold). */
+    (void)sample_rate;
+    if (buffer == NULL || total_samples <= 0 || num_channels <= 0) {
         return total_samples;
     }
-
-    /* For longer files, use sampling strategy */
-    int sample_stride = sample_rate * num_channels / TRIM_SAMPLING_DIVISOR;
-    int approx_end = total_samples;
-
-    for (int i = total_samples - 1; i >= 0; i -= sample_stride) {
-        int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
-        if (sample_magnitude(sample, bytes_per_sample) > threshold) {
-            approx_end = i;
-            break;
-        }
-    }
-
-    /* Narrow search */
-    int search_start = (approx_end > sample_stride) ? (approx_end - sample_stride) : 0;
-    int search_end = (approx_end + sample_stride < total_samples) ?
-                     (approx_end + sample_stride) : total_samples;
-
-    for (int i = search_end - 1; i >= search_start; i--) {
+    for (int i = total_samples - 1; i >= 0; i--) {
         int32_t sample = read_sample(buffer, i, bytes_per_sample, buffer_size, buf24);
         if (sample_magnitude(sample, bytes_per_sample) > threshold) {
             /* Exclusive end of the frame containing the last loud sample */
             return align_frame_end_exclusive(i, num_channels, total_samples);
         }
     }
-
     return total_samples;
 }
 
@@ -296,7 +263,7 @@ double *create_fade_lut(int fade_samples, int curve_type, int direction) {
         return NULL;  /* No fade needed for 0 or 1 samples */
     }
 
-    double *lut = (double *)malloc(fade_samples * sizeof(double));
+    double *lut = (double *)malloc((size_t)fade_samples * sizeof(double));
     if (lut == NULL) {
         return NULL;
     }
@@ -341,15 +308,23 @@ void apply_fade(const wav_header_t *header, unsigned char *buffer,
     }
 
     int bytes_per_sample = header->bits_per_sample / 8;
+    if (bytes_per_sample <= 0 || header->num_channels <= 0 || buffer_size <= 0) {
+        LOG_WARN("Invalid audio geometry, skipping fade\n");
+        return;
+    }
     int total_samples = buffer_size / bytes_per_sample;
 
-    /* Validate fade duration doesn't exceed audio length */
-    int fade_samples_with_channels = fade_samples * header->num_channels;
-    if (fade_samples_with_channels > total_samples) {
+    /* 64-bit channel multiplication: fade_samples can approach INT_MAX at
+     * high sample rates, so fade_samples * num_channels may overflow int. */
+    int64_t fade_wc_64 = (int64_t)fade_samples * (int64_t)header->num_channels;
+    int fade_samples_with_channels;
+    if (fade_wc_64 > total_samples) {
         LOG_WARN("Fade duration (%d ms) exceeds audio length, clamping to fit\n",
                  fade_duration);
         fade_samples_with_channels = total_samples;
         fade_samples = fade_samples_with_channels / header->num_channels;
+    } else {
+        fade_samples_with_channels = (int)fade_wc_64;
     }
 
     /* Pre-calculate fade curve lookup table - major performance optimization */
@@ -407,14 +382,30 @@ void apply_fade(const wav_header_t *header, unsigned char *buffer,
 unsigned char *create_padded_buffer(const unsigned char *input, int input_size,
                                     const wav_header_t *header, int pad_start_ms,
                                     int pad_end_ms, int *output_size) {
+    if (header->num_channels <= 0 || header->bits_per_sample <= 0 ||
+        header->sample_rate <= 0 || output_size == NULL) {
+        LOG_ERROR("Error: Invalid audio geometry for padding\n");
+        return NULL;
+    }
+    int64_t frame_bytes_64 = (int64_t)header->num_channels *
+                             (int64_t)(header->bits_per_sample / 8);
+    if (frame_bytes_64 <= 0 || frame_bytes_64 > INT_MAX) {
+        LOG_ERROR("Error: Invalid frame size for padding\n");
+        return NULL;
+    }
+
     int pad_start_samples = duration_to_samples(pad_start_ms, header->sample_rate);
     if (pad_start_samples < 0) {
         LOG_ERROR("Error: Padding start duration calculation failed (overflow at %d ms)\n",
                   pad_start_ms);
         return NULL;
     }
-    int pad_start_bytes = pad_start_samples * header->num_channels *
-                          (header->bits_per_sample / 8);
+    /* 64-bit: pad samples (~2B) * frame bytes can exceed int range. */
+    int64_t pad_start_bytes_64 = (int64_t)pad_start_samples * frame_bytes_64;
+    if (pad_start_bytes_64 > INT_MAX) {
+        LOG_ERROR("Error: Padding start (%d ms) is too large\n", pad_start_ms);
+        return NULL;
+    }
 
     int pad_end_samples = duration_to_samples(pad_end_ms, header->sample_rate);
     if (pad_end_samples < 0) {
@@ -422,8 +413,14 @@ unsigned char *create_padded_buffer(const unsigned char *input, int input_size,
                   pad_end_ms);
         return NULL;
     }
-    int pad_end_bytes = pad_end_samples * header->num_channels *
-                        (header->bits_per_sample / 8);
+    int64_t pad_end_bytes_64 = (int64_t)pad_end_samples * frame_bytes_64;
+    if (pad_end_bytes_64 > INT_MAX) {
+        LOG_ERROR("Error: Padding end (%d ms) is too large\n", pad_end_ms);
+        return NULL;
+    }
+
+    int pad_start_bytes = (int)pad_start_bytes_64;
+    int pad_end_bytes = (int)pad_end_bytes_64;
 
     /* Check for integer overflow in output size calculation */
     int temp_size;
@@ -440,8 +437,8 @@ unsigned char *create_padded_buffer(const unsigned char *input, int input_size,
         return NULL;
     }
 
-    /* Allocate buffer initialized to zero (silence) */
-    unsigned char *padded_buffer = (unsigned char *)calloc(1, *output_size);
+    /* *output_size > 0 here (input_size > 0, pads >= 0), cast is safe */
+    unsigned char *padded_buffer = (unsigned char *)calloc(1, (size_t)*output_size);
     if (padded_buffer == NULL) {
         LOG_ERROR("Error: Cannot allocate %d bytes for padded buffer (out of memory?)\n",
                   *output_size);
@@ -449,7 +446,7 @@ unsigned char *create_padded_buffer(const unsigned char *input, int input_size,
     }
 
     /* Copy input data into middle of padded buffer */
-    memcpy(padded_buffer + pad_start_bytes, input, input_size);
+    memcpy(padded_buffer + pad_start_bytes, input, (size_t)input_size);
 
     return padded_buffer;
 }
@@ -460,8 +457,22 @@ unsigned char *create_padded_buffer(const unsigned char *input, int input_size,
 
 int validate_options_with_audio(const options_t *options, const wav_header_t *header) {
     int sample_rate = header->sample_rate;
-    int total_samples = header->subchunk2_size / (header->bits_per_sample / 8) / header->num_channels;
-    int duration_ms = (total_samples * 1000) / sample_rate;
+    if (sample_rate <= 0 || header->bits_per_sample <= 0 ||
+        header->num_channels <= 0 || header->subchunk2_size <= 0) {
+        LOG_ERROR("Error: Invalid audio geometry for validation\n");
+        return 1;
+    }
+    /* 64-bit: total_samples * 1000 overflows int for large files. */
+    int64_t bytes_per_sample_64 = header->bits_per_sample / 8;
+    int64_t total_samples_64 = (int64_t)header->subchunk2_size /
+                               bytes_per_sample_64 / header->num_channels;
+    int64_t duration_64 = total_samples_64 * 1000 / sample_rate;
+    if (duration_64 > INT_MAX) {
+        LOG_ERROR("Error: Audio duration exceeds supported range\n");
+        return 1;
+    }
+    int duration_ms = (int)duration_64;
+    int total_samples = (total_samples_64 > INT_MAX) ? INT_MAX : (int)total_samples_64;
 
     LOG_VERBOSE("Audio duration: %d ms (%d samples at %d Hz)\n",
                 duration_ms, total_samples, sample_rate);
@@ -547,14 +558,20 @@ int process_audio(audio_fader_context_t *ctx, const wav_header_t *header,
 
         /* Only allocate and copy if we're actually trimming */
         if (first_sample != 0 || last_sample != total_samples) {
-            int trimmed_size = trimmed_samples * bytes_per_sample;
-            working_buffer = (unsigned char *)malloc(trimmed_size);
+            int trimmed_size;
+            int first_offset;
+            if (!safe_mul_int(trimmed_samples, bytes_per_sample, &trimmed_size) ||
+                !safe_mul_int(first_sample, bytes_per_sample, &first_offset)) {
+                LOG_ERROR("Error: Trimmed size calculation overflow\n");
+                return 1;
+            }
+            working_buffer = (unsigned char *)malloc((size_t)trimmed_size);
             if (working_buffer == NULL) {
                 LOG_ERROR("Error: Cannot allocate %d bytes for trimmed buffer (out of memory?)\n",
                           trimmed_size);
                 return 1;
             }
-            memcpy(working_buffer, input_data + (first_sample * bytes_per_sample), trimmed_size);
+            memcpy(working_buffer, input_data + first_offset, (size_t)trimmed_size);
             current_buffer = working_buffer;
             current_size = trimmed_size;
         } else {
@@ -609,13 +626,13 @@ int process_audio(audio_fader_context_t *ctx, const wav_header_t *header,
             *output_size = current_size;
         } else {
             /* No trim or pad - need to copy input to output */
-            unsigned char *output_copy = (unsigned char *)malloc(current_size);
+            unsigned char *output_copy = (unsigned char *)malloc((size_t)current_size);
             if (output_copy == NULL) {
                 LOG_ERROR("Error: Cannot allocate %d bytes for output buffer (out of memory?)\n",
                           current_size);
                 return 1;
             }
-            memcpy(output_copy, current_buffer, current_size);
+            memcpy(output_copy, current_buffer, (size_t)current_size);
             *output_data = output_copy;
             *output_size = current_size;
         }

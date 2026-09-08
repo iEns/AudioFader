@@ -164,6 +164,51 @@ void print_header_stats(const wav_header_t *header) {
  * Options Parsing
  * ============================================================================ */
 
+/**
+ * Best-effort same-file check.
+ *
+ * 1. If both paths stat OK, compare (st_dev, st_ino): catches
+ *    "in.wav" vs "./in.wav" vs symlinks even when realpath() failed
+ *    for the not-yet-existing output.
+ * 2. Otherwise compare canonical strings when available. POSIX uses
+ *    case-sensitive strcmp (the old strcasecmp wrongly equated
+ *    "In.Wav" with "in.wav" on Linux); Windows keeps _stricmp.
+ */
+static int paths_refer_to_same_file(const char *input_raw,
+                                    const char *output_raw,
+                                    const char *input_resolved,
+                                    const char *output_resolved) {
+#ifndef _WIN32
+    struct stat sta, stb;
+    if (input_raw != NULL && output_raw != NULL &&
+        stat(input_raw, &sta) == 0 && stat(output_raw, &stb) == 0) {
+        return (sta.st_dev == stb.st_dev && sta.st_ino == stb.st_ino);
+    }
+#endif
+    if (input_resolved != NULL && output_resolved != NULL) {
+#ifdef _WIN32
+        return strcasecmp(input_resolved, output_resolved) == 0;
+#else
+        return strcmp(input_resolved, output_resolved) == 0;
+#endif
+    }
+    if (input_raw != NULL && output_raw != NULL) {
+#ifdef _WIN32
+        return strcasecmp(input_raw, output_raw) == 0;
+#else
+        return strcmp(input_raw, output_raw) == 0;
+#endif
+    }
+    return 0;
+}
+
+static void free_resolved_paths(audio_fader_context_t *ctx) {
+    free(ctx->options.input_path_resolved);
+    free(ctx->options.output_path_resolved);
+    ctx->options.input_path_resolved = NULL;
+    ctx->options.output_path_resolved = NULL;
+}
+
 int parse_options(int argc, char *argv[], audio_fader_context_t *ctx) {
     /* Check for --help first (before minimum arg check) */
     for (int i = 1; i < argc; i++) {
@@ -193,25 +238,18 @@ int parse_options(int argc, char *argv[], audio_fader_context_t *ctx) {
     ctx->options.input_path_resolved = get_full_path(ctx->options.input_filename);
     ctx->options.output_path_resolved = get_full_path(ctx->options.output_filename);
 
-    /* Check that input and output are different */
-    /* Use resolved paths if available, otherwise fall back to original names */
-    const char *input_compare = ctx->options.input_path_resolved != NULL ?
-                                ctx->options.input_path_resolved : ctx->options.input_filename;
-    const char *output_compare = ctx->options.output_path_resolved != NULL ?
-                                 ctx->options.output_path_resolved : ctx->options.output_filename;
-
-    /* Validate pointers before using strcasecmp */
-    if (input_compare != NULL && output_compare != NULL) {
-        if (strcasecmp(input_compare, output_compare) == 0) {
-            LOG_ERROR("Error: Input and output file names cannot be the same\n");
-            LOG_ERROR("       Input:  %s\n", ctx->options.input_filename);
-            LOG_ERROR("       Output: %s\n", ctx->options.output_filename);
-            free(ctx->options.input_path_resolved);
-            free(ctx->options.output_path_resolved);
-            ctx->options.input_path_resolved = NULL;
-            ctx->options.output_path_resolved = NULL;
-            return 1;
-        }
+    /* Check that input and output are different (stat-based, so
+     * "in.wav" vs "./in.wav" is caught even when realpath() returns
+     * NULL for the not-yet-existing output file). */
+    if (paths_refer_to_same_file(ctx->options.input_filename,
+                                 ctx->options.output_filename,
+                                 ctx->options.input_path_resolved,
+                                 ctx->options.output_path_resolved)) {
+        LOG_ERROR("Error: Input and output file names cannot be the same\n");
+        LOG_ERROR("       Input:  %s\n", ctx->options.input_filename);
+        LOG_ERROR("       Output: %s\n", ctx->options.output_filename);
+        free_resolved_paths(ctx);
+        return 1;
     }
 
     /* Parse command-line options */
@@ -292,8 +330,16 @@ int parse_options(int argc, char *argv[], audio_fader_context_t *ctx) {
             /* FIX #6: Implement --dry-run flag */
             ctx->options.dry_run = 1;
         } else if (strcmp(argv[i], "--quiet") == 0) {
+            if (ctx->options.verbosity == VERBOSITY_VERBOSE) {
+                LOG_ERROR("Error: --quiet and --verbose cannot be combined\n");
+                goto error_cleanup;
+            }
             ctx->options.verbosity = VERBOSITY_QUIET;
         } else if (strcmp(argv[i], "--verbose") == 0) {
+            if (ctx->options.verbosity == VERBOSITY_QUIET) {
+                LOG_ERROR("Error: --quiet and --verbose cannot be combined\n");
+                goto error_cleanup;
+            }
             ctx->options.verbosity = VERBOSITY_VERBOSE;
         } else {
             /* --help is handled at start of parse_options */
@@ -309,9 +355,6 @@ int parse_options(int argc, char *argv[], audio_fader_context_t *ctx) {
     return 0;
 
 error_cleanup:
-    free(ctx->options.input_path_resolved);
-    free(ctx->options.output_path_resolved);
-    ctx->options.input_path_resolved = NULL;
-    ctx->options.output_path_resolved = NULL;
+    free_resolved_paths(ctx);
     return 1;
 }

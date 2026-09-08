@@ -33,7 +33,7 @@
  * Version Information
  * ============================================================================ */
 
-#define AUDIOFADER_VERSION "1.0.1"
+#define AUDIOFADER_VERSION "1.0.2"
 #define AUDIOFADER_COPYRIGHT "Copyright 2021-2026 iEns Labs"
 
 /* ============================================================================
@@ -43,7 +43,12 @@
 #define MAX_DURATION_MS 10000000
 #define MAX_TRIM_PERCENT 100.0
 #define MIN_ARGC 3
-#define MAX_AUDIO_SIZE (2LL * 1024 * 1024 * 1024)  /* 2GB limit for safety */
+/* Maximum audio payload in bytes. Fits in int32_t so the
+ * "(int64_t)size > MAX_AUDIO_SIZE" check stays live: the on-disk
+ * chunk-size field is a signed 32-bit value (max INT_MAX), and a
+ * 2*1024^3 limit would make that comparison always-false (dead code).
+ * ~2 GiB intent preserved with headroom for header + alignment. */
+#define MAX_AUDIO_SIZE ((int64_t)INT_MAX - 4096)
 
 /* Sample max values for each bit depth */
 #define INT8_MAX_SAMPLE 0x7F
@@ -68,7 +73,8 @@
 #define FADE_CURVE_LOGARITHMIC 2
 #define NUM_FADE_CURVES 3
 
-/* Optimization constants (extracted from magic numbers) */
+/* Trim scan constants (kept for API compat; trim is now always an
+ * exact linear scan — see audio_processing.c — so these are unused). */
 #define TRIM_OPTIMIZATION_THRESHOLD_SECONDS 10
 #define TRIM_SAMPLING_DIVISOR 10  /* Check every 1/10th second */
 
@@ -203,6 +209,23 @@ static inline int safe_add_int(int a, int b, int *result) {
 }
 
 /**
+ * Safely multiply two integers, detecting overflow.
+ *
+ * @param a First integer
+ * @param b Second integer
+ * @param result Pointer to store result
+ * @return 1 on success, 0 if overflow/underflow would occur
+ */
+static inline int safe_mul_int(int a, int b, int *result) {
+    int64_t wide = (int64_t)a * (int64_t)b;
+    if (wide > INT_MAX || wide < INT_MIN) {
+        return 0;
+    }
+    *result = (int)wide;
+    return 1;
+}
+
+/**
  * Get the path separator character for this platform.
  *
  * @return Path separator ('\\' for Windows, '/' for Unix)
@@ -222,8 +245,13 @@ static inline char get_path_separator(void) {
  * @return Pointer to program name within argv0 string (not a copy)
  */
 static inline const char *get_program_name(const char *argv0) {
-    char separator = get_path_separator();
-    const char *name = strrchr(argv0, separator);
+    char separator;
+    const char *name;
+    if (argv0 == NULL || *argv0 == '\0') {
+        return "audiofader";
+    }
+    separator = get_path_separator();
+    name = strrchr(argv0, separator);
     return (name != NULL) ? name + 1 : argv0;
 }
 

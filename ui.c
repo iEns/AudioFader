@@ -22,15 +22,26 @@ const char *FADE_CURVE_NAMES[] = {"Linear", "Bezier", "Logarithmic"};
  * ============================================================================ */
 
 void progress_start(progress_tracker_t *tracker, int total) {
+    if (tracker == NULL) {
+        return;
+    }
     tracker->start_time = clock();
-    tracker->total_steps = total;
+    tracker->total_steps = (total > 0) ? total : 1;
     tracker->current_step = 0;
 }
 
 void progress_update(progress_tracker_t *tracker, const char *operation) {
+    double elapsed;
+    int percent;
+    if (tracker == NULL || operation == NULL) {
+        return;
+    }
+    if (tracker->total_steps <= 0) {
+        tracker->total_steps = 1;
+    }
     tracker->current_step++;
-    double elapsed = (double)(clock() - tracker->start_time) / CLOCKS_PER_SEC;
-    int percent = (tracker->current_step * 100) / tracker->total_steps;
+    elapsed = (double)(clock() - tracker->start_time) / CLOCKS_PER_SEC;
+    percent = (tracker->current_step * 100) / tracker->total_steps;
 
     if (g_verbosity >= VERBOSITY_NORMAL) {
         fprintf(stderr, "\r[%3d%%] %s (%.1fs elapsed)", percent, operation, elapsed);

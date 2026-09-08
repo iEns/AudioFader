@@ -5,7 +5,7 @@
 
 # Project information
 PROJECT = audiofader
-VERSION = 1.0.1
+VERSION = 1.0.2
 
 # Source files (multi-file structure)
 SRCS = audiofader.c wav_io.c audio_processing.c options.c ui.c
@@ -118,6 +118,7 @@ clean:
 	-$(RM) *.o *.obj 2>/dev/null || true
 	-$(RM) -r build 2>/dev/null || true
 	-$(RM) tests/test_trim tests/test_trim.exe 2>/dev/null || true
+	-$(RM) tests/tmp_io_test.wav tests/tmp_exists_guard.wav 2>/dev/null || true
 	@echo "Clean complete."
 
 # Install to system
@@ -155,18 +156,14 @@ format:
 
 # Unit tests (no external dependencies, C99 only)
 check:
-	@echo "Building and running trim unit tests..."
-	$(CC) $(CFLAGS) -o tests/test_trim tests/test_trim.c audio_processing.c wav_io.c ui.c $(LDFLAGS)
+	@echo "Building and running unit tests..."
+	$(CC) $(CFLAGS) -o tests/test_trim tests/test_trim.c audio_processing.c wav_io.c options.c ui.c $(LDFLAGS)
 	./tests/test_trim
 
-# Run with example (requires test file)
+# Smoke test: unit tests + build + --help (no fixture WAV required)
 test: check $(TARGET)
 	@echo "Running basic functionality test..."
-	@if [ -f "test16sine.wav" ]; then \
-		./$(TARGET) test16sine.wav output_test.wav --fadein 500 --fadeout 500 --dry-run; \
-	else \
-		echo "No test16sine.wav file found. Create one to test functionality."; \
-	fi
+	./$(TARGET) --help >/dev/null && echo "help smoke test: ok"
 
 # Help message
 help:

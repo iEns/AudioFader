@@ -62,10 +62,10 @@ int32_t calculate_threshold(int bytes_per_sample, double threshold_percent);
 int duration_to_samples(int duration_ms, int sample_rate);
 
 /**
- * Find first sample above threshold using optimized sampling strategy.
+ * Find first sample above threshold using an exact linear search.
  *
- * For short files, uses linear search. For long files (>10 seconds), uses a
- * sampling strategy to find approximate location, then narrows the search.
+ * Exactness is prioritized over speed: every sample is examined so
+ * single-sample peaks are never missed.
  *
  * @param buffer Audio data buffer
  * @param buffer_size Buffer size in bytes
@@ -83,7 +83,7 @@ int find_first_above_threshold(const unsigned char *buffer, int buffer_size,
                                int num_channels, struct int24 *buf24);
 
 /**
- * Find last sample above threshold using optimized sampling strategy.
+ * Find last sample above threshold using an exact linear search.
  *
  * @param buffer Audio data buffer
  * @param buffer_size Buffer size in bytes

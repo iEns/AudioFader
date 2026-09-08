@@ -7,7 +7,27 @@
  * Licensed under MIT License
  */
 
+/* Ensure realpath(path, NULL) is declared even when built without the
+ * Makefile's -D_POSIX_C_SOURCE/-D_XOPEN_SOURCE flags (bare `gcc *.c`).
+ * glibc exposes the NULL-argument extension only with _XOPEN_SOURCE>=700.
+ * Must precede all system headers (pulled in via common.h). */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+
 #include "wav_io.h"
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+/* WAV header must be exactly 44 bytes (16-byte PCM fmt chunk).
+ * Extended-fmt files are rejected in validate_wav_header. */
+typedef char wav_header_size_check[(sizeof(wav_header_t) == 44) ? 1 : -1];
 
 /* ============================================================================
  * Header Validation
@@ -29,6 +49,21 @@ int validate_wav_header(const wav_header_t *header) {
         return 1;
     }
 
+    /* Only uncompressed PCM is supported. Extended-fmt / float /
+     * ADPCM files would otherwise be misparsed as PCM garbage. */
+    if (header->subchunk1_size != 16) {
+        LOG_ERROR("Error: Unsupported WAV fmt chunk size (%d, expected 16 for PCM)\n",
+                  header->subchunk1_size);
+        LOG_ERROR("       Only uncompressed PCM WAV files are supported\n");
+        return 1;
+    }
+
+    if (header->audio_format != 1) {
+        LOG_ERROR("Error: Unsupported WAV audio format (%d, only PCM format 1 is supported)\n",
+                  header->audio_format);
+        return 1;
+    }
+
     /* FIX #1: Add sample_rate bounds checking */
     if (header->sample_rate < MIN_SAMPLE_RATE || header->sample_rate > MAX_SAMPLE_RATE) {
         LOG_ERROR("Error: Sample rate %d Hz is outside supported range (%d-%d Hz)\n",
@@ -47,6 +82,23 @@ int validate_wav_header(const wav_header_t *header) {
         LOG_ERROR("Error: Unsupported channel count (%d channels)\n", header->num_channels);
         LOG_ERROR("       Supported: mono (1) or stereo (2)\n");
         return 1;
+    }
+
+    /* Cross-check derived fields against header claims */
+    {
+        int bytes_per_sample = header->bits_per_sample / 8;
+        int expected_block_align = header->num_channels * bytes_per_sample;
+        int32_t expected_byte_rate = (int32_t)((int64_t)header->sample_rate * expected_block_align);
+        if (header->block_align != expected_block_align) {
+            LOG_ERROR("Error: Invalid block align (%d, expected %d)\n",
+                      header->block_align, expected_block_align);
+            return 1;
+        }
+        if (header->byte_rate != expected_byte_rate) {
+            LOG_ERROR("Error: Invalid byte rate (%d, expected %d)\n",
+                      header->byte_rate, expected_byte_rate);
+            return 1;
+        }
     }
 
     return 0;
@@ -195,24 +247,31 @@ int load_wav_file(audio_fader_context_t *ctx, wav_header_t *header,
         goto cleanup;
     }
 
-    /* Validate data chunk size before allocation */
+    /* Validate data chunk size before allocation.
+     * NOTE: values >= 2 GiB would wrap to negative int32 on disk and are
+     * already rejected by the <= 0 branch below. */
     if (data_chunk_size <= 0) {
         LOG_ERROR("Error: Invalid audio data size (%d bytes) in '%s'\n",
                   data_chunk_size, ctx->options.input_filename);
         goto cleanup;
     }
-    if ((long long)data_chunk_size > MAX_AUDIO_SIZE) {
+    if ((int64_t)data_chunk_size > MAX_AUDIO_SIZE) {
         LOG_ERROR("Error: Audio data size (%d bytes) exceeds maximum allowed (%lld bytes)\n",
                   data_chunk_size, (long long)MAX_AUDIO_SIZE);
         LOG_ERROR("       File: %s\n", ctx->options.input_filename);
         goto cleanup;
     }
-    if (data_chunk_size > file_size) {
+    if ((int64_t)data_chunk_size > (int64_t)file_size) {
         LOG_ERROR("Error: Audio data size (%d bytes) exceeds file size (%ld bytes)\n",
                   data_chunk_size, file_size);
         LOG_ERROR("       File: %s (possibly corrupted)\n", ctx->options.input_filename);
         goto cleanup;
     }
+
+    /* Use the located data chunk (not the stale header fields), so files
+     * with extra chunks (LIST/fact/bext) validate against real audio. */
+    header->subchunk2_size = data_chunk_size;
+    memcpy(header->subchunk2_id, WAV_DATA_ID, 4);
 
     /* FIX #2: Add data alignment validation */
     int frame_size = (header->bits_per_sample / 8) * header->num_channels;
@@ -223,8 +282,8 @@ int load_wav_file(audio_fader_context_t *ctx, wav_header_t *header,
         goto cleanup;
     }
 
-    /* Allocate buffer for audio data */
-    data = (unsigned char *)malloc(data_chunk_size);
+    /* data_chunk_size > 0 here, so the size_t conversion is safe */
+    data = (unsigned char *)malloc((size_t)data_chunk_size);
     if (data == NULL) {
         LOG_ERROR("Error: Cannot allocate %d bytes for audio data (out of memory?)\n",
                   data_chunk_size);
@@ -232,7 +291,7 @@ int load_wav_file(audio_fader_context_t *ctx, wav_header_t *header,
     }
 
     /* Read audio data */
-    if (fread(data, data_chunk_size, 1, input_file) != 1) {
+    if (fread(data, (size_t)data_chunk_size, 1, input_file) != 1) {
         LOG_ERROR("Error: Failed to read audio data from '%s' (read error or corrupted file)\n",
                   ctx->options.input_filename);
         free(data);
@@ -258,11 +317,38 @@ cleanup:
 
 int write_output(audio_fader_context_t *ctx, wav_header_t *header,
                  const unsigned char *data, int data_size) {
-    /* FIX #4: Improved race condition handling - try to open with exclusive create first */
     FILE *output_file = NULL;
 
+    if (data == NULL || data_size <= 0) {
+        LOG_ERROR("Error: Nothing to write (%d bytes)\n", data_size);
+        return 1;
+    }
+
     if (!ctx->options.force_overwrite) {
-        /* Try to detect if file exists by attempting to open for reading */
+#ifndef _WIN32
+        /* Atomic exclusive create: no TOCTOU window between check+open. */
+        int fd = open(ctx->options.output_filename,
+                      O_CREAT | O_EXCL | O_WRONLY, 0666);
+        if (fd < 0) {
+            if (errno == EEXIST) {
+                LOG_ERROR("Error: Output file '%s' already exists\n",
+                          ctx->options.output_filename);
+                LOG_ERROR("       Use --force to overwrite existing files\n");
+            } else {
+                LOG_ERROR("Error: Cannot open output file '%s': %s\n",
+                          ctx->options.output_filename, strerror(errno));
+            }
+            return 1;
+        }
+        output_file = fdopen(fd, "wb");
+        if (output_file == NULL) {
+            LOG_ERROR("Error: Cannot open output file '%s': %s\n",
+                      ctx->options.output_filename, strerror(errno));
+            close(fd);
+            return 1;
+        }
+#else
+        /* Windows fallback: check-then-create (small race window). */
         FILE *test_file = fopen(ctx->options.output_filename, "rb");
         if (test_file != NULL) {
             fclose(test_file);
@@ -270,14 +356,21 @@ int write_output(audio_fader_context_t *ctx, wav_header_t *header,
             LOG_ERROR("       Use --force to overwrite existing files\n");
             return 1;
         }
-        /* Note: There's still a small race window here, but it's acceptable for this use case */
-    }
 
-    output_file = fopen(ctx->options.output_filename, "wb");
-    if (output_file == NULL) {
-        LOG_ERROR("Error: Cannot open output file '%s': %s\n",
-                  ctx->options.output_filename, strerror(errno));
-        return 1;
+        output_file = fopen(ctx->options.output_filename, "wb");
+        if (output_file == NULL) {
+            LOG_ERROR("Error: Cannot open output file '%s': %s\n",
+                      ctx->options.output_filename, strerror(errno));
+            return 1;
+        }
+#endif
+    } else {
+        output_file = fopen(ctx->options.output_filename, "wb");
+        if (output_file == NULL) {
+            LOG_ERROR("Error: Cannot open output file '%s': %s\n",
+                      ctx->options.output_filename, strerror(errno));
+            return 1;
+        }
     }
 
     /* Update header with new sizes */
@@ -292,8 +385,8 @@ int write_output(audio_fader_context_t *ctx, wav_header_t *header,
         return 1;
     }
 
-    /* Write audio data */
-    if (fwrite(data, data_size, 1, output_file) != 1) {
+    /* Write audio data (data_size > 0 validated above) */
+    if (fwrite(data, (size_t)data_size, 1, output_file) != 1) {
         LOG_ERROR("Error: Failed to write audio data to '%s' (%d bytes)\n",
                   ctx->options.output_filename, data_size);
         fclose(output_file);

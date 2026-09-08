@@ -1,12 +1,5 @@
 /*
- * AudioFader - Trim detection unit tests
- *
- * Covers the magnitude-based silence detection fix:
- *  - negative peaks must stop trimming (all signed depths)
- *  - 8-bit PCM is centered on 128 before comparing
- *  - trim-end is exclusive and frame-aligned (stereo safe)
- *  - 24-bit I/O is portable (no GCC bitfield dependency)
- *  - 8-bit fade preserves silence (128 offset, not 127)
+ * AudioFader - unit tests (trim, sample I/O, fade, pad, WAV validation)
  *
  * Build: make check   (no external dependencies, C99 only)
  */
@@ -15,6 +8,7 @@
 
 #include "../common.h"
 #include "../audio_processing.h"
+#include "../options.h"
 #include "../wav_io.h"
 
 static int failures = 0;
@@ -174,45 +168,45 @@ static void test_stereo_frame_alignment(void) {
 }
 
 static void test_long_file_sampling_path(void) {
-    /* Force the >10s sampling path: 8000Hz mono needs >= 80000 samples.
-     * Note: the coarse scan steps by sample_rate/10 (800 here), so use
-     * sustained loud blocks wider than the stride, not single samples. */
+    /* Exactness regression: single-sample peaks in a >10s file must be
+     * found. The old coarse-stride scan missed these. */
     int total = 90000;
     int bps = 2;
-    unsigned char *buf = (unsigned char *)calloc((size_t)total, bps);
+    unsigned char *buf = (unsigned char *)calloc((size_t)total, (size_t)bps);
     if (!buf) {
         CHECK(0, "%s", "calloc failed for long-path test");
         return;
     }
-    for (int i = 100; i < 1100; i++) {
-        put16le(buf + (size_t)i * 2, -15000); /* loud block near start */
-    }
-    for (int i = 80000; i < 81000; i++) {
-        put16le(buf + (size_t)i * 2, -15000); /* loud block near end */
-    }
+    put16le(buf + (size_t)100 * 2, -15000);   /* single loud sample */
+    put16le(buf + (size_t)80000 * 2, -15000); /* single loud sample */
     int32_t th = calculate_threshold(bps, 1.0);
     int first = find_first_above_threshold(buf, total * bps, total, bps, th, 8000, 1, NULL);
     int last = find_last_above_threshold(buf, total * bps, total, bps, th, 8000, 1, NULL);
-    CHECK(first >= 0 && first <= 100, "long path: first near 100, got %d", first);
-    CHECK(last == 81000, "long path: last exclusive 81000, got %d", last);
+    CHECK(first == 100, "long path: single-sample first==100, got %d", first);
+    CHECK(last == 80001, "long path: single-sample last exclusive 80001, got %d", last);
     free(buf);
 }
 
 static void test_8bit_fade_preserves_silence(void) {
-    /* Fade-in over 2 frames at 8000Hz: first frame factor ~0 must stay 128. */
+    /* Fade-in over 1ms at 8kHz = 8 samples: first frame factor ~0 must
+     * stay 128 (unsigned silence), and loud audio must be attenuated. */
     wav_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.sample_rate = 8000;
     hdr.num_channels = 1;
     hdr.bits_per_sample = 8;
-    unsigned char buf[] = {128, 128, 128, 128};
-    /* 1ms at 8kHz = 8 samples; use buffer of 8 silent samples */
     unsigned char buf8[8];
     memset(buf8, 128, sizeof(buf8));
     apply_fade(&hdr, buf8, sizeof(buf8), 1, FADE_DIRECTION_IN, FADE_CURVE_LINEAR, NULL);
     CHECK(buf8[0] == 128, "8-bit fade-in silence stays 128, got %d", buf8[0]);
     CHECK(buf8[7] == 128, "8-bit fade-in end silence stays 128, got %d", buf8[7]);
-    (void)buf;
+
+    /* Loud max (255 = +127) faded in: first sample ~0 gain -> ~128. */
+    unsigned char loud[8];
+    memset(loud, 255, sizeof(loud));
+    apply_fade(&hdr, loud, sizeof(loud), 1, FADE_DIRECTION_IN, FADE_CURVE_LINEAR, NULL);
+    CHECK(loud[0] == 128, "8-bit fade-in attenuates start to 128, got %d", loud[0]);
+    CHECK(loud[7] == 255, "8-bit fade-in keeps end at 255, got %d", loud[7]);
 }
 
 static void test_trim_boundaries_integration(void) {
@@ -231,6 +225,126 @@ static void test_trim_boundaries_integration(void) {
     find_trim_boundaries(&hdr, buf, sizeof(buf), 1.0, 1.0, &first, &last, NULL);
     CHECK(first == 2, "boundaries: first==2 got %d", first);
     CHECK(last == 4, "boundaries: last exclusive==4 got %d", last);
+}
+
+static void test_sample_io_oob(void) {
+    unsigned char buf[4] = {0, 0, 0, 0};
+    /* Out-of-bounds reads return 0; writes return 0 and leave buffer alone. */
+    CHECK(read_sample(NULL, 0, 2, 4, NULL) == 0, "read NULL buffer");
+    CHECK(read_sample(buf, -1, 2, 4, NULL) == 0, "read negative index");
+    CHECK(read_sample(buf, 2, 2, 4, NULL) == 0, "read past end");
+    CHECK(read_sample(buf, 0, 5, 4, NULL) == 0, "read invalid bps");
+    CHECK(write_sample(NULL, 0, 2, 4, 1, NULL) == 0, "write NULL buffer");
+    CHECK(write_sample(buf, 2, 2, 4, 0x1234, NULL) == 0, "write past end");
+    CHECK(write_sample(buf, 0, 5, 4, 1, NULL) == 0, "write invalid bps");
+    CHECK(buf[0] == 0 && buf[1] == 0, "failed write leaves buffer intact");
+}
+
+static void test_threshold_and_duration(void) {
+    CHECK(calculate_threshold(5, 1.0) == 0, "unknown bps threshold==0");
+    CHECK(calculate_threshold(1, 1.0) == 1, "8-bit 1%% threshold==1, got %d",
+          (int)calculate_threshold(1, 1.0));
+    /* Overflow: 10M ms at 192kHz = 1.92B samples fits, but INT_MAX+1 must fail. */
+    CHECK(duration_to_samples(10000000, 192000) == 1920000000,
+          "duration max fits");
+    CHECK(duration_to_samples(INT_MAX, 192000) < 0, "duration overflow returns -1");
+    CHECK(create_fade_lut(0, 0, 0) == NULL, "fade lut 0 samples NULL");
+    CHECK(create_fade_lut(1, 0, 0) == NULL, "fade lut 1 sample NULL");
+    {
+        double *lut = create_fade_lut(8, FADE_CURVE_LINEAR, FADE_DIRECTION_IN);
+        CHECK(lut != NULL, "fade lut allocated");
+        if (lut != NULL) {
+            CHECK(lut[0] == 0.0, "fade-in starts at 0");
+            CHECK(lut[7] == 1.0, "fade-in ends at 1");
+            free(lut);
+        }
+    }
+    {
+        double *lut = create_fade_lut(8, FADE_CURVE_LINEAR, FADE_DIRECTION_OUT);
+        CHECK(lut != NULL, "fade-out lut allocated");
+        if (lut != NULL) {
+            CHECK(lut[0] == 1.0, "fade-out starts at 1");
+            CHECK(lut[7] == 0.0, "fade-out ends at 0");
+            free(lut);
+        }
+    }
+}
+
+static void test_header_rejects_nonpcm(void) {
+    wav_header_t hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    memcpy(hdr.chunk_id, "RIFF", 4);
+    memcpy(hdr.format, "WAVE", 4);
+    memcpy(hdr.subchunk1_id, "fmt ", 4);
+    hdr.subchunk1_size = 16;
+    hdr.audio_format = 1;
+    hdr.num_channels = 1;
+    hdr.sample_rate = 8000;
+    hdr.bits_per_sample = 16;
+    hdr.block_align = 2;
+    hdr.byte_rate = 16000;
+    CHECK(validate_wav_header(&hdr) == 0, "valid PCM header accepted");
+
+    hdr.audio_format = 3; /* IEEE float */
+    CHECK(validate_wav_header(&hdr) != 0, "float format rejected");
+    hdr.audio_format = 1;
+
+    hdr.subchunk1_size = 18; /* extended fmt */
+    CHECK(validate_wav_header(&hdr) != 0, "extended fmt rejected");
+    hdr.subchunk1_size = 16;
+
+    hdr.block_align = 99;
+    CHECK(validate_wav_header(&hdr) != 0, "bad block_align rejected");
+    hdr.block_align = 2;
+
+    hdr.byte_rate = 1;
+    CHECK(validate_wav_header(&hdr) != 0, "bad byte_rate rejected");
+}
+
+static void test_pad_edge_cases(void) {
+    wav_header_t hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.sample_rate = 192000;
+    hdr.num_channels = 2;
+    hdr.bits_per_sample = 32;
+    {
+        unsigned char in[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+        int out_size = 0;
+        /* Zero-length input is rejected, not memcpy'd. */
+        CHECK(create_padded_buffer(in, 0, &hdr, 10, 10, &out_size) == NULL,
+              "pad zero-length input NULL");
+        /* 10M ms at 192kHz stereo 32-bit = ~15 GB -> overflow guard NULL. */
+        CHECK(create_padded_buffer(in, sizeof(in), &hdr, 10000000, 0,
+                                   &out_size) == NULL,
+              "pad huge start NULL (overflow guard)");
+    }
+}
+
+static void test_same_file_rejected(void) {
+    /* Identical argv strings are always the same file. */
+    audio_fader_context_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    char *argv1[] = {"prog", "same.wav", "same.wav"};
+    CHECK(parse_options(3, argv1, &ctx) != 0, "identical in/out rejected");
+}
+
+static void test_write_output_exists_guard(void) {
+    const char *path = "tests/tmp_exists_guard.wav";
+    FILE *f = fopen(path, "wb");
+    if (f != NULL) {
+        fwrite("x", 1, 1, f);
+        fclose(f);
+    }
+    audio_fader_context_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.options.output_filename = path;
+    ctx.options.force_overwrite = 0;
+    wav_header_t hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    unsigned char data[4] = {0, 0, 0, 0};
+    CHECK(write_output(&ctx, &hdr, data, sizeof(data)) != 0,
+          "existing output without --force rejected");
+    remove(path);
 }
 
 static void write_test_wav(const char *path, const unsigned char *audio, int audio_size) {
@@ -292,15 +406,28 @@ static void test_wav_load_data_offset(void) {
 }
 
 int main(void) {
+    const char *names[] = {
+        "sample_io_roundtrip", "negative_peak", "8bit_centering",
+        "stereo_alignment", "long_exact", "8bit_fade", "boundaries",
+        "sample_io_oob", "threshold_duration", "header_nonpcm",
+        "pad_edge", "same_file", "exists_guard", "wav_offset"
+    };
+    void (*tests[])(void) = {
+        test_sample_io_roundtrip, test_negative_peak_stops_trim,
+        test_8bit_centering, test_stereo_frame_alignment,
+        test_long_file_sampling_path, test_8bit_fade_preserves_silence,
+        test_trim_boundaries_integration, test_sample_io_oob,
+        test_threshold_and_duration, test_header_rejects_nonpcm,
+        test_pad_edge_cases, test_same_file_rejected,
+        test_write_output_exists_guard, test_wav_load_data_offset
+    };
+    size_t n = sizeof(tests) / sizeof(tests[0]);
     g_verbosity = VERBOSITY_QUIET; /* silence progress/log output during tests */
-    test_sample_io_roundtrip();
-    test_negative_peak_stops_trim();
-    test_8bit_centering();
-    test_stereo_frame_alignment();
-    test_long_file_sampling_path();
-    test_8bit_fade_preserves_silence();
-    test_trim_boundaries_integration();
-    test_wav_load_data_offset();
+    for (size_t i = 0; i < n; i++) {
+        int before = failures;
+        tests[i]();
+        printf("%s: %s\n", names[i], failures == before ? "ok" : "FAILED");
+    }
 
     printf("trim tests: %d passed, %d failed\n", passes, failures);
     return failures == 0 ? 0 : 1;
