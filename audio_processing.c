@@ -445,6 +445,11 @@ unsigned char *create_padded_buffer(const unsigned char *input, int input_size,
         return NULL;
     }
 
+    /* 8-bit PCM is unsigned: silence is 128, not 0 (calloc default). */
+    if (header->bits_per_sample == 8) {
+        memset(padded_buffer, 128, (size_t)*output_size);
+    }
+
     /* Copy input data into middle of padded buffer */
     memcpy(padded_buffer + pad_start_bytes, input, (size_t)input_size);
 

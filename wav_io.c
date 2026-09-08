@@ -123,10 +123,17 @@ int skip_to_data_chunk(FILE *file, const wav_header_t *header,
 
     /* Skip non-data chunks until we find the data chunk */
     int pointer_to_next_subchunk;
-    if (!safe_add_int((int)header->subchunk2_size, (int)sizeof(wav_header_t),
-                      &pointer_to_next_subchunk)) {
-        LOG_ERROR("Error: WAV file has invalid chunk sizes (integer overflow detected)\n");
-        return 1;
+    {
+        /* WAV chunks are word-aligned: odd-sized payloads have 1 pad byte. */
+        int first_payload = (int)header->subchunk2_size;
+        int first_pad = (first_payload >= 0) ? (first_payload & 1) : 0;
+        int first_chunk_total;
+        if (!safe_add_int(first_payload, first_pad, &first_chunk_total) ||
+            !safe_add_int(first_chunk_total, (int)sizeof(wav_header_t),
+                          &pointer_to_next_subchunk)) {
+            LOG_ERROR("Error: WAV file has invalid chunk sizes (integer overflow detected)\n");
+            return 1;
+        }
     }
 
     sub_chunk_header_t subchunk_header;
@@ -158,9 +165,12 @@ int skip_to_data_chunk(FILE *file, const wav_header_t *header,
             return 0;  /* Found data chunk */
         }
 
-        /* Safely calculate next chunk position */
+        /* Safely calculate next chunk position (word-aligned: odd payload + 1 pad byte) */
         int next_offset;
-        if (!safe_add_int(*data_chunk_size, (int)sizeof(sub_chunk_header_t), &next_offset) ||
+        int payload_padded = *data_chunk_size;
+        int pad = (payload_padded & 1);
+        if (!safe_add_int(payload_padded, pad, &payload_padded) ||
+            !safe_add_int(payload_padded, (int)sizeof(sub_chunk_header_t), &next_offset) ||
             !safe_add_int(pointer_to_next_subchunk, next_offset, &pointer_to_next_subchunk)) {
             LOG_ERROR("Error: WAV file has invalid chunk sizes (integer overflow detected)\n");
             return 1;
